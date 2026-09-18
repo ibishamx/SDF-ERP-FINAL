@@ -1,0 +1,6 @@
+{
+  "name": "Saleem Daal Factory",
+  "description": "Enterprise management portal for Saleem Daal Factory with Cheques, Factory Stock, Petty Cash, User Roles and Backup.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
