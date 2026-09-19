@@ -28,6 +28,8 @@ export const PettyCashModule: React.FC = () => {
   const [showIssueCashModal, setShowIssueCashModal] = useState(false);
   const [showRecordExpenseModal, setShowRecordExpenseModal] = useState(false);
   const [showConfirmClearModal, setShowConfirmClearModal] = useState(false);
+  const [showEditFloatModal, setShowEditFloatModal] = useState(false);
+  const [floatInputValue, setFloatInputValue] = useState('0');
 
   // Date Filtering State
   const [dateRangeFilter, setDateRangeFilter] = useState<'today' | 'yesterday' | 'month' | 'all' | 'custom'>('all');
@@ -70,6 +72,35 @@ export const PettyCashModule: React.FC = () => {
     updatedAt: new Date().toISOString(),
   };
 
+  // Starting Float adjustment handlers
+  const handleOpenEditFloat = () => {
+    setFloatInputValue((primaryAccount.openingBalance || 0).toString());
+    setShowEditFloatModal(true);
+  };
+
+  const handleSaveStartingFloat = (amount: number) => {
+    if (!storageService.hasPermission('canManagePettyCash')) {
+      showToast('Permission Denied: Requires Petty Cash Management permission.', 'error');
+      return;
+    }
+    storageService.setAccountOpeningBalance(primaryAccount.id, amount);
+    loadData();
+    setShowEditFloatModal(false);
+    showToast(`Starting Float set to Rs. ${amount.toLocaleString()}. All ledger balances recalculated!`);
+  };
+
+  const handleResetFloatToZero = () => {
+    if (!storageService.hasPermission('canManagePettyCash')) {
+      showToast('Permission Denied: Requires Petty Cash Management permission.', 'error');
+      return;
+    }
+    if (confirm('Reset starting float to Rs. 0? All balances will recalculate purely from recorded Money In and Money Out entries.')) {
+      storageService.setAccountOpeningBalance(primaryAccount.id, 0);
+      loadData();
+      showToast('Starting float reset to Rs. 0 and all ledger balances verified!');
+    }
+  };
+
   // + Money In Handler
   const handleIssueCash = (data: {
     accountId: string;
@@ -91,6 +122,7 @@ export const PettyCashModule: React.FC = () => {
       ...data,
       accountId: primaryAccount.id,
     });
+    loadData();
     showToast(`Money In: Added Rs. ${data.amount.toLocaleString()} to Petty Cash (Voucher: ${tx.voucherNumber})`);
   };
 
@@ -120,6 +152,7 @@ export const PettyCashModule: React.FC = () => {
       ...data,
       accountId: primaryAccount.id,
     });
+    loadData();
     showToast(`Money Out: Recorded expense of Rs. ${data.amount.toLocaleString()} (Voucher: ${tx.voucherNumber})`);
   };
 
@@ -130,6 +163,7 @@ export const PettyCashModule: React.FC = () => {
       return;
     }
     storageService.clearPettyCashData();
+    loadData();
     setShowConfirmClearModal(false);
     showToast('All petty cash transactions cleared and balance reset to Rs. 0.');
   };
@@ -140,9 +174,10 @@ export const PettyCashModule: React.FC = () => {
       showToast('Permission Denied: Cannot delete petty cash entries.', 'error');
       return;
     }
-    if (confirm('Are you sure you want to delete this petty cash entry?')) {
+    if (confirm('Are you sure you want to delete this petty cash entry? All subsequent balances will be cleanly recalculated with ZERO residual effect.')) {
       storageService.deletePettyCashTransaction(id);
-      showToast('Petty cash entry deleted.');
+      loadData();
+      showToast('Entry deleted and ledger balances recalculated successfully with zero residual effect.');
     }
   };
 
@@ -261,6 +296,14 @@ export const PettyCashModule: React.FC = () => {
 
         <div className="flex items-center gap-3">
           <button
+            onClick={() => handleRecalculateBalances()}
+            className="px-3.5 py-2.5 rounded-xl border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-bold transition flex items-center gap-2"
+            title="Recalculate and synchronize all chronological ledger balances"
+          >
+            <RefreshCw className="w-4 h-4 text-emerald-400" />
+            Recalculate Balances
+          </button>
+          <button
             onClick={() => setShowConfirmClearModal(true)}
             className="px-3.5 py-2.5 rounded-xl border border-slate-700 bg-slate-800/80 hover:bg-rose-950/60 hover:border-rose-700 text-slate-300 hover:text-rose-300 text-xs font-bold transition flex items-center gap-2"
             title="Clear petty cash balance & wipe history"
@@ -286,6 +329,25 @@ export const PettyCashModule: React.FC = () => {
             </div>
             <div className="text-4xl sm:text-5xl font-black tracking-tight text-white my-1">
               {formatCurrencyPKR(primaryAccount.currentBalance)}
+            </div>
+            <div className="flex flex-wrap items-center gap-2 mt-2 text-xs text-slate-400">
+              <span>Starting Float: <strong className="text-slate-200">{formatCurrencyPKR(primaryAccount.openingBalance || 0)}</strong></span>
+              <button
+                onClick={handleOpenEditFloat}
+                className="text-[11px] text-cyan-400 hover:text-cyan-300 underline font-medium"
+                title="Change or set the starting cash float"
+              >
+                Set Float
+              </button>
+              {(primaryAccount.openingBalance || 0) > 0 && (
+                <button
+                  onClick={handleResetFloatToZero}
+                  className="text-[11px] text-amber-400 hover:text-amber-300 underline font-medium"
+                  title="Reset starting float to 0 if an old deleted transaction corrupted it"
+                >
+                  (Reset to 0)
+                </button>
+              )}
             </div>
             <p className="text-xs text-slate-400 mt-2">
               {primaryAccount.currentBalance === 0
@@ -628,6 +690,63 @@ export const PettyCashModule: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Set / Adjust Starting Float Modal */}
+      {showEditFloatModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 max-w-md w-full space-y-4 shadow-2xl border border-slate-200 dark:border-slate-700 animate-in fade-in zoom-in duration-150">
+            <div className="flex items-center gap-3 text-cyan-600 dark:text-cyan-400">
+              <Wallet className="w-6 h-6 shrink-0" />
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                Set Starting Cash Float
+              </h3>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              The starting float is the initial physical cash in the drawer before any Money In / Money Out records. If you record all cash injections via <strong>+ Money In</strong>, keep this at <strong>Rs. 0</strong>.
+            </p>
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                Starting Float (PKR)
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={floatInputValue}
+                onChange={(e) => setFloatInputValue(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm font-bold focus:ring-2 focus:ring-cyan-500"
+                placeholder="0"
+                autoFocus
+              />
+            </div>
+            <div className="flex items-center justify-between gap-3 pt-3">
+              <button
+                type="button"
+                onClick={() => handleSaveStartingFloat(0)}
+                className="text-xs font-semibold text-amber-600 hover:text-amber-700 dark:text-amber-400 underline"
+              >
+                Set to Rs. 0
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowEditFloatModal(false)}
+                  className="px-4 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 rounded-xl"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSaveStartingFloat(Number(floatInputValue) || 0)}
+                  className="px-4 py-2 text-xs font-bold text-white bg-cyan-600 hover:bg-cyan-700 rounded-xl shadow-md"
+                >
+                  Save & Recalculate
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Clear All Confirmation Modal */}
       {showConfirmClearModal && (

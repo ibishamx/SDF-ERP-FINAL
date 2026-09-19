@@ -1197,81 +1197,124 @@ class StorageService {
   public deletePettyCashTransaction(id: string) {
     const index = this.pcTransactions.findIndex((t) => t.id === id);
     if (index !== -1) {
+      const deleted = this.pcTransactions[index];
       this.pcTransactions.splice(index, 1);
+
+      // Clean up linked reimbursement if the deleted entry was a reimbursement
+      if (deleted.transactionType === 'REIMBURSEMENT') {
+        const reimIdx = this.pcReimbursements.findIndex(
+          (r) => r.reimbursementNumber === deleted.voucherNumber || r.id === deleted.id
+        );
+        if (reimIdx !== -1) {
+          this.pcReimbursements.splice(reimIdx, 1);
+          this.savePcReimbursements();
+        }
+      }
+
+      // Chronologically recalculate all transaction balances from zero/opening float
       this.recalculatePettyCashBalances();
+
+      const amt = (Number(deleted.cashReceived) || Number(deleted.cashPaid) || 0).toLocaleString();
+      this.logPettyCashAudit(
+        'DELETED',
+        'TRANSACTION',
+        deleted.id,
+        deleted.voucherNumber,
+        this.getCurrentUser().fullName,
+        `Deleted ${deleted.transactionType} voucher ${deleted.voucherNumber} (Amount: Rs. ${amt}). All ledger balances recalculated with zero residual balance.`
+      );
     }
   }
 
   /**
    * Recalculates all chronological petty cash previousBalance & runningBalance
-   * values sequentially from the opening float across all records.
-   * This guarantees that every single row's balance = previous balance + in - out.
+   * values sequentially from the true opening float across all records.
+   * This guarantees that:
+   * 1. Every row's balance = previous balance + cash in - cash out
+   * 2. Deleted entries leave ZERO residual or ghost effect on any subsequent transaction
+   * 3. Opening float is never contaminated with previous balances of deleted transactions
    */
   public recalculatePettyCashBalances(): void {
     if (!this.pcAccounts || this.pcAccounts.length === 0) {
       this.getPettyCashAccounts();
     }
-    const account = this.pcAccounts[0];
-    if (!account) return;
+    if (!this.pcAccounts || this.pcAccounts.length === 0) return;
 
-    // Sort all transactions chronologically: oldest first
-    const sorted = [...this.pcTransactions].sort((a, b) => {
-      const dateA = (a.date || '') + ' ' + (a.time || '00:00');
-      const dateB = (b.date || '') + ' ' + (b.time || '00:00');
-      if (dateA !== dateB) return dateA.localeCompare(dateB);
-      const createdA = a.createdAt || '';
-      const createdB = b.createdAt || '';
-      if (createdA !== createdB) return createdA.localeCompare(createdB);
-      return (a.voucherNumber || '').localeCompare(b.voucherNumber || '');
-    });
+    // Recalculate each account independently
+    for (const account of this.pcAccounts) {
+      const isSingleAccount = this.pcAccounts.length === 1;
+      const accountTxs = this.pcTransactions.filter(
+        (t) => isSingleAccount || t.accountId === account.id || (!t.accountId && account.id === 'pca-main')
+      );
 
-    // Base opening balance:
-    // If account has an opening balance > 0, preserve it.
-    // If account has 0 opening balance, check if the earliest transaction had an initial float.
-    let baseOpening = account.openingBalance || 0;
-    if (baseOpening === 0 && sorted.length > 0 && typeof sorted[0].previousBalance === 'number' && sorted[0].previousBalance > 0) {
-      baseOpening = sorted[0].previousBalance;
-      account.openingBalance = baseOpening;
-    }
+      // Sort strictly chronologically: oldest first, latest last
+      const sorted = [...accountTxs].sort((a, b) => {
+        const dateA = (a.date || '') + ' ' + (a.time || '00:00');
+        const dateB = (b.date || '') + ' ' + (b.time || '00:00');
+        if (dateA !== dateB) return dateA.localeCompare(dateB);
+        const createdA = a.createdAt || '';
+        const createdB = b.createdAt || '';
+        if (createdA !== createdB) return createdA.localeCompare(createdB);
+        return (a.voucherNumber || '').localeCompare(b.voucherNumber || '');
+      });
 
-    let running = baseOpening;
-    let totalIn = 0;
-    let totalOut = 0;
-    let totalReim = 0;
+      // Base opening balance is strictly what is configured in the account (default 0).
+      // CRITICAL: We NEVER overwrite account.openingBalance with sorted[0].previousBalance,
+      // which previously caused deleted transactions to be permanently locked in as ghost floats!
+      const baseOpening = Math.max(0, Number(account.openingBalance) || 0);
+      let running = baseOpening;
+      let totalIn = 0;
+      let totalOut = 0;
+      let totalReim = 0;
 
-    for (const tx of sorted) {
-      const prev = running;
-      const inAmt = Number(tx.cashReceived) || 0;
-      const outAmt = Number(tx.cashPaid) || 0;
-      running = prev + inAmt - outAmt;
+      for (const tx of sorted) {
+        const prev = running;
+        const inAmt = Number(tx.cashReceived) || 0;
+        const outAmt = Number(tx.cashPaid) || 0;
+        running = prev + inAmt - outAmt;
 
-      tx.previousBalance = prev;
-      tx.runningBalance = running;
-      totalIn += inAmt;
-      totalOut += outAmt;
-      if (tx.transactionType === 'REIMBURSEMENT') {
-        totalReim += inAmt;
+        tx.previousBalance = prev;
+        tx.runningBalance = running;
+        totalIn += inAmt;
+        totalOut += outAmt;
+        if (tx.transactionType === 'REIMBURSEMENT') {
+          totalReim += inAmt;
+        }
       }
-    }
 
-    // Synchronize account state
-    account.currentBalance = running;
-    account.totalCashIssued = totalIn;
-    account.totalExpenses = totalOut;
-    account.totalReimbursements = totalReim;
-    if (sorted.length > 0) {
-      account.lastTransactionDate = sorted[sorted.length - 1].date;
-    }
-    account.updatedAt = new Date().toISOString();
+      // Update account status and totals
+      account.currentBalance = running;
+      account.totalCashIssued = totalIn;
+      account.totalExpenses = totalOut;
+      account.totalReimbursements = totalReim;
+      account.lastTransactionDate = sorted.length > 0 ? sorted[sorted.length - 1].date : undefined;
+      account.updatedAt = new Date().toISOString();
 
-    // Map updated balances back to this.pcTransactions
-    const updatedMap = new Map<string, PettyCashTransaction>();
-    sorted.forEach((t) => updatedMap.set(t.id, t));
-    this.pcTransactions = this.pcTransactions.map((t) => updatedMap.get(t.id) || t);
+      // Map clean updated balances back to this.pcTransactions
+      const updatedMap = new Map<string, PettyCashTransaction>();
+      sorted.forEach((t) => updatedMap.set(t.id, t));
+      this.pcTransactions = this.pcTransactions.map((t) => updatedMap.get(t.id) || t);
+    }
 
     this.savePcAccounts();
     this.savePcTransactions();
     notifyListeners();
+  }
+
+  public setAccountOpeningBalance(accountId: string, newOpeningBalance: number): void {
+    const account = this.pcAccounts.find((a) => a.id === accountId) || this.pcAccounts[0];
+    if (!account) throw new Error('Account not found');
+    const oldFloat = account.openingBalance;
+    account.openingBalance = Math.max(0, Number(newOpeningBalance) || 0);
+    this.recalculatePettyCashBalances();
+    this.logPettyCashAudit(
+      'UPDATED',
+      'ACCOUNT',
+      account.id,
+      undefined,
+      this.getCurrentUser().fullName,
+      `Updated starting float for ${account.employeeName} from Rs. ${oldFloat.toLocaleString()} to Rs. ${account.openingBalance.toLocaleString()}`
+    );
   }
 
   public getPettyCashAccountById(id: string): PettyCashAccount | undefined {
@@ -1381,6 +1424,7 @@ class StorageService {
     }
 
     this.savePcAccounts();
+    this.recalculatePettyCashBalances();
     return account;
   }
 

@@ -13,6 +13,7 @@ import {
   ArrowDownRight,
   RefreshCw,
   User,
+  Trash2,
 } from 'lucide-react';
 import { PettyCashTransaction, PettyCashAccount, UserRole, PettyCashCategory } from '../../types';
 import { formatCurrencyPKR } from '../../services/exportService';
@@ -33,6 +34,7 @@ interface PettyCashTransactionsProps {
   onExportCsv: (txs: PettyCashTransaction[]) => void;
   onApproveTx?: (id: string) => void;
   onRejectTx?: (id: string) => void;
+  onDeleteTx?: (id: string) => void;
 }
 
 export const PettyCashTransactions: React.FC<PettyCashTransactionsProps> = ({
@@ -51,6 +53,7 @@ export const PettyCashTransactions: React.FC<PettyCashTransactionsProps> = ({
   onExportCsv,
   onApproveTx,
   onRejectTx,
+  onDeleteTx,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('ALL');
@@ -404,6 +407,20 @@ export const PettyCashTransactions: React.FC<PettyCashTransactionsProps> = ({
                               <XCircle className="w-3.5 h-3.5" />
                             </button>
                           </>
+                        )}
+
+                        {canManage && onDeleteTx && (
+                          <button
+                            onClick={() => {
+                              if (confirm(`Delete entry ${t.voucherNumber}? Subsequent balances will recalculate automatically.`)) {
+                                onDeleteTx(t.id);
+                              }
+                            }}
+                            className="p-1 hover:bg-rose-100 dark:hover:bg-rose-900/50 rounded text-rose-600 dark:text-rose-400"
+                            title="Delete Voucher"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         )}
                       </div>
                     </td>
